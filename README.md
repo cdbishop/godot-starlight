@@ -28,6 +28,12 @@ Article describing how this works: https://tiffnix.com/star-rendering
   very far away.
 - Works with Forward+, Mobile, and Compatibility renderers.
 - Comes with a random star generator based on main sequence stars (classes M through O).
+- Optional scrolling background via `scroll_speed` with seamless wrap when
+  `generation_radius` is set (typically to the same value as `size`).
+- Runtime star generation runs on a background thread and caches results by
+  generation parameters (no project autoload required).
+- Optional `flat_xz` placement for a disk-shaped field suited to scrolling
+  menu / loading backgrounds.
 
 [1]: https://en.wikipedia.org/wiki/Point_spread_function
 [2]: https://docs.godotengine.org/en/stable/classes/class_multimeshinstance3d.html
@@ -43,22 +49,33 @@ randomly generate stars. The default will be 10 000.
 This script procedurally generates stars in a ball centered on the
 origin. It has these properties:
 
-- `size`: Stars are spawned inside of a sphere of this radius.
+- `size`: Stars are spawned inside of a sphere (or disk) of this radius.
 - `star_count`: The number of stars to create.
 - `rng_seed`: The random seed to use when generating stars. Incrementing
   this will give you a different sky.
 - `generate_at_origin`: If checked, one extra G-type star will be
   generated exactly at `0, 0, 0`. This can be useful for representing
   the Sun in your scene.
+- `flat_xz`: If checked, stars are placed on the XZ plane (`Y = 0`)
+  instead of a full sphere. Useful for scrolling background planes.
+
+At runtime, generation starts automatically in `_ready()` on a
+background thread and emits `stars_generated` when finished. You can also
+call `_force_generate_stars()` manually. Matching generation parameters
+reuse a cached star list.
 
 For further customization of the star generator, I recommend editing the
 script directly.
 
 ## StarManager / Stars.tscn
 
-There is only 1 script property exported, which is which shader to use.
-The default points to `Star.gdshader`. You can fork the shader easily by
-changing this.
+Script properties:
+
+- `shader`: Which shader to use. The default points to `Star.gdshader`.
+  You can fork the shader easily by changing this.
+- `scroll_speed`: World-space scroll velocity applied each frame. Pair
+  with `shader_params/generation_radius` (usually equal to `size`) so
+  stars wrap seamlessly instead of drifting away forever.
 
 The script also forwards the shader parameters which you can edit
 directly.
@@ -104,6 +121,11 @@ The following visual properties are exposed:
   table in psf-textures/README.md.
 - `clamp_output` - Clamps the output from 0 to 1 when enabled. Can be
   useful depending on how your HDR is setup.
+- `scroll_offset` - World-space offset applied to every star (usually
+  driven by `StarManager.scroll_speed`, not edited by hand).
+- `generation_radius` - When greater than zero, star positions wrap
+  within a cube of this half-extent so scrolling loops seamlessly.
+  StarGenerator sets this to `size` after generation.
 
 In order to have good performance, the PSF texture needs to be cropped
 depending on how bright the star is on screen. The majority of stars
