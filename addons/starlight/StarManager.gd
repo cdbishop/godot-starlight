@@ -2,8 +2,11 @@
 extends Node3D
 
 
-@export var shader: Shader
+@export var shader: Shader = load("res://addons/starlight/Star.gdshader")
 @export var visible_instance_count: int = -1
+@export var scroll_speed := Vector3.ZERO
+
+var scroll_offset := Vector3.ZERO
 
 
 ## Class used to represent stars for StarManager. Passed to set_star_list().
@@ -112,6 +115,8 @@ var mesh: MultiMesh
 # This forwards the shader parameters, which would otherwise be inaccessible because the Material
 # is generated at runtime.
 func _get_property_list():
+	if shader == null:
+		return []
 	var props = []
 	var shader_params := RenderingServer.get_shader_parameter_list(shader.get_rid())
 	for p in shader_params:
@@ -181,6 +186,9 @@ func set_star_list(star_list: Array[Star]):
 		mesh.set_instance_custom_data(i, Color(star.luminosity, 0, 0))
 
 
-func _process(_delta):
+func _process(delta):
 	material.shader = shader
 	mesh.visible_instance_count = visible_instance_count
+	if scroll_speed != Vector3.ZERO:
+		scroll_offset += scroll_speed * delta
+		material.set_shader_parameter("scroll_offset", scroll_offset)

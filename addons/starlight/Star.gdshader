@@ -18,6 +18,9 @@ uniform float min_size_ratio : hint_range(0, 1.0) = 1.0;
 uniform float max_luminosity;
 uniform float scaling_gamma : hint_range(0.0, 2.0) = 1.0;
 uniform bool debug_show_rects = false;
+uniform vec3 scroll_offset = vec3(0.0, 0.0, 0.0);
+uniform float generation_radius = 0.0;
+
 
 
 varying vec3 STAR_COLOR;
@@ -28,8 +31,17 @@ const float lightyear_length = 9.460730e15;
 
 
 void vertex() {
+	vec4 star_world_pos_with_offset = MODEL_MATRIX[3] + vec4(scroll_offset, 0.0);
+
+	if (generation_radius > 0.0) {
+		float domain = generation_radius * 2.0;
+		star_world_pos_with_offset.x = mod(star_world_pos_with_offset.x + generation_radius, domain) - generation_radius;
+		star_world_pos_with_offset.y = mod(star_world_pos_with_offset.y + generation_radius, domain) - generation_radius;
+		star_world_pos_with_offset.z = mod(star_world_pos_with_offset.z + generation_radius, domain) - generation_radius;
+	}
+
 	// Find distance from camera
-	float dist = -(MODELVIEW_MATRIX * vec4(vec3(0.0), 1.0)).z;
+	float dist = -(VIEW_MATRIX * star_world_pos_with_offset).z;
 	// Use lightyear scaling ratio, then convert back to meters.
 	highp float dist_adj = dist * (lightyear_length / meters_per_lightyear);
 
@@ -50,7 +62,7 @@ void vertex() {
 	UV = (UV - vec2(0.5)) * scale_ratio + vec2(0.5);
 
 	// Billboard rotation locking.
-	MODELVIEW_MATRIX = VIEW_MATRIX * mat4(INV_VIEW_MATRIX[0],INV_VIEW_MATRIX[1],INV_VIEW_MATRIX[2],MODEL_MATRIX[3]);
+	MODELVIEW_MATRIX = VIEW_MATRIX * mat4(INV_VIEW_MATRIX[0],INV_VIEW_MATRIX[1],INV_VIEW_MATRIX[2],star_world_pos_with_offset);
 	// Use zero instead of VERTEX position because we want to position the quad in clip space instead.
 	vec3 modelview_pos = (MODELVIEW_MATRIX * vec4(vec3(0.0), 1.0)).xyz;
 
@@ -73,6 +85,7 @@ void vertex() {
 	if (OUTPUT_IS_SRGB) {
 		POSITION.z = -1.0 * projected.w;
 	} else {
+		// This ensures the stars are rendered at the back
 		POSITION.z = 0.0 * projected.w;
 	}
 }
