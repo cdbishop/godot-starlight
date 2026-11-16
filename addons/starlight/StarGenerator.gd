@@ -2,7 +2,7 @@
 extends "res://addons/starlight/StarManager.gd"
 ## Procedurally generates main sequence stars and populates StarManager with them.
 
-## Radius of a sphere in which to place stars.
+## Radius of a sphere (or disk when flat_xz) in which to place stars.
 @export var size: float = 5000: set = _set_extents
 ## Number of stars to generate.
 @export var star_count: int = 10000: set = _set_star_count
@@ -10,30 +10,29 @@ extends "res://addons/starlight/StarManager.gd"
 @export var rng_seed: int = 1234: set = _set_rng_seed
 ## If set to true, a Sol-like star will be placed at 0,0,0.
 @export var generate_at_origin: bool = false: set = _set_generate_at_origin
-
-
-var _regenerate = true
+## If true, stars are placed on the XZ plane (Y = 0) instead of a full sphere.
+@export var flat_xz: bool = false: set = _set_flat_xz
 
 
 func _set_extents(value):
 	size = value
-	_regenerate = true
-
+	_generate_stars_editor()
 
 func _set_star_count(value):
 	star_count = value
-	_regenerate = true
-
+	_generate_stars_editor()
 
 func _set_rng_seed(value):
 	rng_seed = value
-	_regenerate = true
-
+	_generate_stars_editor()
 
 func _set_generate_at_origin(value):
 	generate_at_origin = value
-	_regenerate = true
+	_generate_stars_editor()
 
+func _set_flat_xz(value):
+	flat_xz = value
+	_generate_stars_editor()
 
 class RangeF:
 	var min: float
@@ -138,11 +137,11 @@ var star_table = [
 ]
 
 
-func sample_sphere(rng: RandomNumberGenerator, radius: float):
+func sample_sphere(rng: RandomNumberGenerator, radius: float, p_flat_xz: bool = flat_xz):
 	while true:
 		var pos = Vector3(
 			rng.randf_range(-1.0, 1.0),
-			rng.randf_range(-1.0, 1.0),
+			0.0 if p_flat_xz else rng.randf_range(-1.0, 1.0),
 			rng.randf_range(-1.0, 1.0)
 		)
 		if pos.length_squared() <= 1.0:
@@ -163,14 +162,125 @@ func random_category(rng: RandomNumberGenerator):
 		if weight <= sum:
 			return category
 
+signal stars_generated
 
-# Called every frame. 'delta' is the elapsed time since the previous frame.
-func _process(delta):
-	if not _regenerate:
+var _generation_thread: Thread
+var _thread_mutex: Mutex
+var _generated_stars_data: Array
+var _generating := false
+
+func _cache_key() -> String:
+	return StarfieldCache.make_key(rng_seed, star_count, size, generate_at_origin, flat_xz)
+
+func _apply_cached_stars(data: Array) -> void:
+	var typed: Array[Star] = []
+	typed.assign(data)
+	set_star_list(typed)
+	if material:
+		material.set_shader_parameter("generation_radius", size)
+	_generating = false
+	stars_generated.emit()
+
+func _force_generate_stars():
+	if _generating:
+		return
+	# Reuse prior generation with the same params.
+	if not Engine.is_editor_hint() and StarfieldCache.has_stars(_cache_key()):
+		_apply_cached_stars(StarfieldCache.get_stars(_cache_key()))
+		return
+	_join_thread() # reap a previous, completed thread
+	_generating = true
+	if _thread_mutex == null:
+		_thread_mutex = Mutex.new()
+	_generated_stars_data = []
+	_generation_thread = Thread.new()
+	_generation_thread.start(
+		_generate_stars_threaded.bind(rng_seed, star_count, generate_at_origin, size, flat_xz)
+	)
+
+func _join_thread() -> void:
+	if _generation_thread and _generation_thread.is_started():
+		_generation_thread.wait_to_finish()
+	_generation_thread = null
+
+func _generate_stars_threaded(p_rng_seed, p_star_count, p_generate_at_origin, p_size, p_flat_xz):
+	# Capture table/refs locally so mid-flight free of self is less likely to UAF.
+	var table: Array = star_table.duplicate()
+	var sol_class = class_G
+	var mutex = _thread_mutex
+
+	var rng = RandomNumberGenerator.new()
+	rng.seed = p_rng_seed
+
+	var stars: Array[Star] = []
+
+	if p_generate_at_origin and sol_class:
+		stars.push_back(sol_class.get_star(Vector3.ZERO, 0.5))
+
+	for i in range(0, p_star_count):
+		var category = _random_category_from_table(rng, table)
+		if not category:
+			continue
+		stars.push_back(category.get_star(_sample_sphere(rng, p_size, p_flat_xz), rng.randf()))
+
+	if mutex:
+		mutex.lock()
+		_generated_stars_data = stars
+		mutex.unlock()
+
+	# Don't call into a freed node (e.g. scene torn down mid-generation).
+	if is_instance_valid(self):
+		call_deferred("_apply_generated_stars")
+
+func _sample_sphere(rng: RandomNumberGenerator, radius: float, p_flat_xz: bool) -> Vector3:
+	while true:
+		var pos = Vector3(
+			rng.randf_range(-1.0, 1.0),
+			0.0 if p_flat_xz else rng.randf_range(-1.0, 1.0),
+			rng.randf_range(-1.0, 1.0)
+		)
+		if pos.length_squared() <= 1.0:
+			return pos * radius
+	return Vector3.ZERO
+
+func _random_category_from_table(rng: RandomNumberGenerator, table: Array):
+	var sum = 0
+	for category in table:
+		sum += category.weight
+
+	var weight = rng.randi_range(1, sum - 1)
+
+	sum = 0
+	for category in table:
+		sum += category.weight
+		if weight <= sum:
+			return category
+	return null
+
+func _apply_generated_stars():
+	if not is_instance_valid(self):
+		return
+	_join_thread()
+	var data: Array = []
+	if _thread_mutex:
+		_thread_mutex.lock()
+		data = _generated_stars_data
+		_thread_mutex.unlock()
+	else:
+		data = _generated_stars_data
+	if not Engine.is_editor_hint() and not data.is_empty():
+		StarfieldCache.store_stars(_cache_key(), data)
+	set_star_list(data)
+	if material:
+		material.set_shader_parameter("generation_radius", size)
+	_generating = false
+	stars_generated.emit()
+
+func _generate_stars_editor():
+	if not Engine.is_editor_hint():
 		return
 
-	_regenerate = false
-
+	# Synchronous in editor for immediate feedback.
 	var rng = RandomNumberGenerator.new()
 	rng.seed = rng_seed
 
@@ -184,8 +294,23 @@ func _process(delta):
 		if not category:
 			continue
 
-		stars.push_back(category.get_star(sample_sphere(rng, size), rng.randf()))
+		stars.push_back(category.get_star(sample_sphere(rng, size, flat_xz), rng.randf()))
 
 	set_star_list(stars)
 
+	if material:
+		material.set_shader_parameter("generation_radius", size)
+
+func _exit_tree():
+	_join_thread()
+
+func _notification(what):
+	if what == NOTIFICATION_PREDELETE:
+		_join_thread()
+
+func _ready():
+	if not Engine.is_editor_hint():
+		_force_generate_stars()
+
+func _process(delta):
 	super._process(delta)
